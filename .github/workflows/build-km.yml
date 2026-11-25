@@ -24,12 +24,11 @@ env:
   EXPECTED_CRC: '0xaad0c453'
   DEVICE_VERMAGIC: '4.19.157-perf-gf8cf95f4dc15 SMP preempt mod_unload modversions aarch64'
   KERNEL_REPO: 'https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git'
-  CLANG_PKG: 'clang-14'
 
 jobs:
   # ── 1. 找出所有可能是 elish(小米平板5 Pro / sm8250, msm-4.19) 的分支 ──
   discover:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       branches: ${{ steps.list.outputs.branches }}
     steps:
@@ -56,7 +55,7 @@ jobs:
   build:
     needs: discover
     if: needs.discover.outputs.branches != '' && needs.discover.outputs.branches != '[]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 240
     continue-on-error: true
     strategy:
@@ -74,11 +73,20 @@ jobs:
 
       - name: 安装交叉工具链
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev jq \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu ${{ env.CLANG_PKG }}
-          clang-14 --version | head -1
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          # runner 镜像会升级（ubuntu-26.04 已经没有 clang-14），按可用性挑最低可用版本
+          for v in 14 15 16 17 18; do
+            if sudo apt-get install -y --no-install-recommends "clang-$v" >/dev/null 2>&1; then
+              echo "CC_NAME=clang-$v" >> "$GITHUB_ENV"
+              break
+            fi
+          done
+          test -n "${CC_NAME:-}" || { echo "没有可用的 clang"; exit 1; }
+          "$CC_NAME" --version | head -1
 
       - name: 拉源码（浅克隆单分支）
         run: |
@@ -112,7 +120,7 @@ jobs:
           W=scripts/config
           sh $W --file "$OUT/.config" -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_REDUCED \
             -d DEBUG_INFO_SPLIT -d LOCALVERSION_AUTO -e MODULES -e MODVERSIONS -e MODULE_UNLOAD
-          make O="$OUT" ARCH=arm64 CC=clang-14 CLANG_TRIPLE=aarch64-linux-gnu- \
+          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS)=' "$OUT/.config"
 
@@ -120,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$KSRC"
-          make O="$OUT" ARCH=arm64 CC=clang-14 CLANG_TRIPLE=aarch64-linux-gnu- \
+          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="-gf8cf95f4dc15" \
             -j"$(nproc)" vmlinux
           test -f "$OUT/Module.symvers"
@@ -144,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$KSRC"
-          make O="$OUT" ARCH=arm64 CC=clang-14 CLANG_TRIPLE=aarch64-linux-gnu- \
+          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="-gf8cf95f4dc15" \
             M="$GITHUB_WORKSPACE/km" modules
           cd "$GITHUB_WORKSPACE"
