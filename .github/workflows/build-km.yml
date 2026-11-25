@@ -121,6 +121,7 @@ jobs:
           set -euo pipefail
           OUT=$PWD/out
           mkdir -p "$OUT"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
           cp config/device.config "$OUT/.config"
           cd "$KSRC"
           # 提速：关调试信息；确定性：关 LOCALVERSION_AUTO；确保模块/CRC 能力
