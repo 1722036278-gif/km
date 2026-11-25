@@ -24,6 +24,11 @@ env:
   EXPECTED_CRC: '0xaad0c453'
   DEVICE_VERMAGIC: '4.19.157-perf-gf8cf95f4dc15 SMP preempt mod_unload modversions aarch64'
   KERNEL_REPO: 'https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git'
+  # 4.19 的 Makefile 自带 -Werror=implicit-int / -Werror=strict-prototypes，
+  # 而小米树里 arch/arm64/kernel/smp.c(in_long_press)、kernel/power/power_debug.c
+  # 这类厂商改动过不了这两条（原厂用 clang + 自家 flag 才能过）。
+  # KCFLAGS 追加在 KBUILD_CFLAGS 之后，正好降级这些 error，不影响 genksyms 的 CRC。
+  KCFLAGS: '-Wno-error=implicit-int -Wno-error=strict-prototypes -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion -Wno-error=array-bounds -Wno-error=stringop-overflow -Wno-error=maybe-uninitialized'
 
 jobs:
   # ── 1. 找出所有可能是 elish(小米平板5 Pro / sm8250, msm-4.19) 的分支 ──
