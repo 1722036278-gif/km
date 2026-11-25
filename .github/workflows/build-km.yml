@@ -121,6 +121,12 @@ jobs:
           # 统一改成普通外部函数。genksyms 只看类型签名，不改 CRC。
           sed -i -E 's/^extern inline (bool|void) /extern \1 /' include/linux/sched.h
           sed -i -E 's/^inline (bool|void) (is_|set_inherit_|restore_inherit_)/\1 \2/' kernel/sched/core.c
+          # bq2597x 充电 IC 驱动用 double 数组做 ADC 换算，GCC 的 -mgeneral-regs-only 直接报
+          #   error: '-mgeneral-regs-only' is incompatible with the use of floating-point types
+          # clang 不管这行。这一路只在 SC8551 硬件上跑，与 CRC 无关，改成整数占位即可。
+          sed -i 's|\*result = (int)(t \* sc8551_adc_lsb\[channel\]);|*result = (int)t; /* CI: FP 占位，不参与 CRC */|' \
+            drivers/power/supply/ti/bq2597x_charger.c
+          grep -n 'CI: FP 占位' drivers/power/supply/ti/bq2597x_charger.c || true
           grep -nE '^(extern )?(bool|void) (is_top_app|is_critical_task|is_inherit_top_app)' include/linux/sched.h kernel/sched/core.c
 
       - name: 套用设备 .config
