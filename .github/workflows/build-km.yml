@@ -1,0 +1,177 @@
+name: build-km
+
+# 目标：在 CI 里用设备导出的 .config 复刻小米原厂内核的 CRCs，
+# 编出能被 elish (4.19.157-perf-gf8cf95f4dc15) 直接 insmod 的 km.ko
+#
+# 关键断言：Module.symvers 里 module_layout == 0xaad0c453
+#   （取自设备 /vendor/lib/modules/lcd.ko 的 __versions 段）
+# 关键重建：vermagic 必须是 4.19.157-perf-gf8cf95f4dc15
+#   → CONFIG_LOCALVERSION="-perf" + LOCALVERSION="-gf8cf95f4dc15"，关掉 LOCALVERSION_AUTO
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'km/**'
+      - 'config/**'
+      - 'scripts/**'
+      - '.github/workflows/build-km.yml'
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_CRC: '0xaad0c453'
+  DEVICE_VERMAGIC: '4.19.157-perf-gf8cf95f4dc15 SMP preempt mod_unload modversions aarch64'
+  KERNEL_REPO: 'https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git'
+  CLANG_PKG: 'clang-14'
+
+jobs:
+  # ── 1. 找出所有可能是 elish(小米平板5 Pro / sm8250, msm-4.19) 的分支 ──
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      branches: ${{ steps.list.outputs.branches }}
+    steps:
+      - id: list
+        run: |
+          set -euo pipefail
+          cand=""
+          for page in 1 2 3 4 5; do
+            names=$(curl -fsS "https://api.github.com/repos/MiCode/Xiaomi_Kernel_OpenSource/branches?per_page=100&page=$page" \
+                    | jq -r '.[].name' || true)
+            [ -z "$names" ] && break
+            cand="$cand
+          $names"
+          done
+          echo "全部分支："
+          echo "$cand" | sed '/^$/d' | sed 's/^/  /'
+          elish=$(echo "$cand" | sed '/^$/d' | grep -Ei 'elish' || true)
+          [ -z "$elish" ] && elish=$(echo "$cand" | sed '/^$/d' | grep -Ei 'sm8250' || true)
+          json=$(echo "$elish" | sed '/^$/d' | head -n 8 | jq -R . | jq -sc .)
+          echo "候选：$json"
+          echo "branches=$json" >> "$GITHUB_OUTPUT"
+
+  # ── 2. 每个候选分支各编一遍，谁的 module_layout 对得上谁就是对应源码 ──
+  build:
+    needs: discover
+    if: needs.discover.outputs.branches != '' && needs.discover.outputs.branches != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ${{ fromJson(needs.discover.outputs.branches) }}
+    name: km-${{ matrix.branch }}
+    steps:
+      - name: 腾出磁盘（runner 只有 ~14G，整核编要占满）
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: 安装交叉工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev jq \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu ${{ env.CLANG_PKG }}
+          clang-14 --version | head -1
+
+      - name: 拉源码（浅克隆单分支）
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if git clone --depth 1 --single-branch --branch "${{ matrix.branch }}" \
+                 "$KERNEL_REPO" kernel; then break; fi
+            echo "clone 失败，重试 $i"; rm -rf kernel; sleep 10
+          done
+          test -d kernel
+          if [ -d kernel/kernel/msm-4.19 ]; then ROOT=kernel/kernel/msm-4.19; else ROOT=kernel; fi
+          echo "KSRC=$PWD/$ROOT" >> "$GITHUB_ENV"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)' "$ROOT/Makefile" | head -3
+
+      - name: 版本预检（必须是 4.19，否则不浪费 40 分钟）
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^VERSION *= *//p' "$KSRC/Makefile" | head -1)
+          p=$(sed -n 's/^PATCHLEVEL *= *//p' "$KSRC/Makefile" | head -1)
+          echo "源码版本 $v.$p"
+          [ "$v.$p" = "4.19" ] || { echo "跳过：不是 4.19 分支"; exit 1; }
+
+      - name: 套用设备 .config
+        run: |
+          set -euo pipefail
+          OUT=$PWD/out
+          mkdir -p "$OUT"
+          cp config/device.config "$OUT/.config"
+          cd "$KSRC"
+          # 提速：关调试信息；确定性：关 LOCALVERSION_AUTO；确保模块/CRC 能力
+          W=scripts/config
+          sh $W --file "$OUT/.config" -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_REDUCED \
+            -d DEBUG_INFO_SPLIT -d LOCALVERSION_AUTO -e MODULES -e MODVERSIONS -e MODULE_UNLOAD
+          make O="$OUT" ARCH=arm64 CC=clang-14 CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS)=' "$OUT/.config"
+
+      - name: 编 vmlinux（拿 Module.symvers）
+        run: |
+          set -euo pipefail
+          cd "$KSRC"
+          make O="$OUT" ARCH=arm64 CC=clang-14 CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="-gf8cf95f4dc15" \
+            -j"$(nproc)" vmlinux
+          test -f "$OUT/Module.symvers"
+
+      - name: 校验 module_layout CRC
+        id: crc
+        run: |
+          set -uo pipefail
+          rc=0
+          python3 scripts/check_crc.py "$OUT/Module.symvers" "${{ env.EXPECTED_CRC }}" | tee crc.txt || rc=$?
+          if [ "$rc" = "0" ]; then
+            echo "matched=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::本分支 CRC 对上，就是它：${{ matrix.branch }}"
+          else
+            echo "matched=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::本分支 module_layout 不匹配，不是这份源码（exit=$rc）"
+          fi
+
+      - name: 编 km.ko
+        if: steps.crc.outputs.matched == '1'
+        run: |
+          set -euo pipefail
+          cd "$KSRC"
+          make O="$OUT" ARCH=arm64 CC=clang-14 CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="-gf8cf95f4dc15" \
+            M="$GITHUB_WORKSPACE/km" modules
+          cd "$GITHUB_WORKSPACE"
+          cp "$OUT/Module.symvers" .
+          test -f km/hide_ksu_mnt.ko
+          echo "=== 产物 ==="; ls -l km/*.ko
+
+      - name: 校验 vermagic
+        if: steps.crc.outputs.matched == '1'
+        run: |
+          set -euo pipefail
+          got=$(strings km/hide_ksu_mnt.ko | grep -m1 '^4\.19\.157')
+          echo "ko vermagic : $got"
+          echo "设备需要    : ${{ env.DEVICE_VERMAGIC }}"
+          if [ "$got" = "${{ env.DEVICE_VERMAGIC }}" ]; then
+            echo "VERMAGIC OK" | tee -a crc.txt
+          else
+            echo "::warning::vermagic 不一致，insmod 会被拒（需要手工补丁或换提交）"
+            echo "VERMAGIC MISMATCH" | tee -a crc.txt
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.crc.outputs.matched == '1'
+        with:
+          name: km-${{ matrix.branch }}
+          path: |
+            km/hide_ksu_mnt.ko
+            Module.symvers
+            crc.txt
+          if-no-files-found: warn

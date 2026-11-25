@@ -1,0 +1,13 @@
+# 证据文件（厂商二进制，不随仓库发布）
+evidence/
+
+# 本地编译产物
+out/
+*.o
+*.ko
+*.mod
+*.mod.c
+*.order
+*.symvers
+Module.symvers
+crc.txt
