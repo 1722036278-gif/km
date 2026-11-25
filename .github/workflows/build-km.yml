@@ -78,22 +78,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev jq \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
-          # runner 镜像会升级（ubuntu-26.04 已经没有 clang-14），按可用性挑最低可用版本。
-          # 注意：CC_NAME 必须在本 shell 里也赋值，GITHUB_ENV 只对后续 step 生效。
-          CC_NAME=""
-          for v in 14 15 16 17 18; do
-            if sudo apt-get install -y --no-install-recommends "clang-$v"; then
-              CC_NAME="clang-$v"
-              break
-            fi
-          done
-          if [ -z "$CC_NAME" ]; then
-            echo "没有可用的 clang（16/17/18 也装不上）"
-            exit 1
-          fi
-          echo "CC_NAME=$CC_NAME" >> "$GITHUB_ENV"
-          echo "选中编译器: $CC_NAME"
-          "$CC_NAME" --version | head -1
+          # 用 GCC 交叉编译器：4.19 的 scripts/mod/empty.o 在 clang 下需要
+          # --target= 才能正确汇编，而 module_layout 的 CRC 是 genksyms 从 C 类型
+          # 定义算出来的，与编译器无关 → GCC 不影响 CRC 匹配，且更稳。
+          echo "CC_NAME=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          aarch64-linux-gnu-gcc --version | head -1
+          ld --version | head -1
 
       - name: 拉源码（浅克隆单分支）
         run: |
@@ -128,16 +118,19 @@ jobs:
           W=scripts/config
           sh $W --file "$OUT/.config" -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_REDUCED \
             -d DEBUG_INFO_SPLIT -d LOCALVERSION_AUTO -e MODULES -e MODVERSIONS -e MODULE_UNLOAD
-          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CROSS_COMPILE=aarch64-linux-gnu- \
+            HOSTCFLAGS="-fcommon" olddefconfig
           grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS)=' "$OUT/.config"
 
       - name: 编 vmlinux（拿 Module.symvers）
         run: |
           set -euo pipefail
           cd "$KSRC"
-          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="-gf8cf95f4dc15" \
+          # HOSTCFLAGS=-fcommon：gcc>=10 默认 -fno-common，4.19 的
+          # scripts/dtc/dtc-parser.tab.c 与 dtc-lexer.lex.c 都定义了 yylloc，
+          # 不加这个会 ld 多重定义失败。
+          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CROSS_COMPILE=aarch64-linux-gnu- \
+            HOSTCFLAGS="-fcommon" LOCALVERSION="-gf8cf95f4dc15" \
             -j"$(nproc)" vmlinux
           test -f "$OUT/Module.symvers"
 
@@ -160,8 +153,8 @@ jobs:
         run: |
           set -euo pipefail
           cd "$KSRC"
-          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION="-gf8cf95f4dc15" \
+          make O="$OUT" ARCH=arm64 CC="$CC_NAME" CROSS_COMPILE=aarch64-linux-gnu- \
+            HOSTCFLAGS="-fcommon" LOCALVERSION="-gf8cf95f4dc15" \
             M="$GITHUB_WORKSPACE/km" modules
           cd "$GITHUB_WORKSPACE"
           cp "$OUT/Module.symvers" .
