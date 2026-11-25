@@ -111,6 +111,18 @@ jobs:
           echo "源码版本 $v.$p"
           [ "$v.$p" = "4.19" ] || { echo "跳过：不是 4.19 分支"; exit 1; }
 
+      - name: 修补厂商源码（clang 语义依赖）
+        run: |
+          set -euo pipefail
+          cd "$KSRC"
+          # 小米在 sched.h 里写 `extern inline bool is_top_app(...)`、core.c 里写 `inline bool ...`
+          # clang 能过，GCC(gnu89) 会把它当成 always_inline 但拿不到函数体：
+          #   error: inlining failed in call to 'always_inline' 'is_top_app': function body not available
+          # 统一改成普通外部函数。genksyms 只看类型签名，不改 CRC。
+          sed -i -E 's/^extern inline (bool|void) /extern \1 /' include/linux/sched.h
+          sed -i -E 's/^inline (bool|void) (is_|set_inherit_|restore_inherit_)/\1 \2/' kernel/sched/core.c
+          grep -nE '^(extern )?(bool|void) (is_top_app|is_critical_task|is_inherit_top_app)' include/linux/sched.h kernel/sched/core.c
+
       - name: 套用设备 .config
         run: |
           set -euo pipefail
