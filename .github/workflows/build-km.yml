@@ -140,27 +140,29 @@ jobs:
           # 提速：关调试信息；确定性：关 LOCALVERSION_AUTO；确保模块/CRC 能力
           W=scripts/config
           sh $W --file "$OUT/.config" -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_REDUCED \
-            -d DEBUG_INFO_SPLIT -d LOCALVERSION_AUTO -e MODULES -e MODVERSIONS -e MODULE_UNLOAD
+            -d DEBUG_INFO_SPLIT -d LOCALVERSION_AUTO -e MODULES -e MODVERSIONS -e MODULE_UNLOAD \
+            -d GSI -d IPA3
           make O="$OUT" ARCH=arm64 CC="$CC_NAME" CROSS_COMPILE=aarch64-linux-gnu- \
             HOSTCFLAGS="-fcommon" olddefconfig
           grep -E '^CONFIG_(LOCALVERSION|MODVERSIONS)=' "$OUT/.config"
 
       - name: 编 vmlinux（拿 Module.symvers）
         run: |
-          set -uo pipefail
+          set +e
           cd "$KSRC"
-          # HOSTCFLAGS=-fcommon：gcc>=10 默认 -fno-common，4.19 的 dtc 会 yylloc 多重定义。
           # 关键点：Module.symvers 是 modpost 在 **链接 vmlinux 之前** 生成的
-          # （link-vmlinux.sh: LD vmlinux.o → MODPOST vmlinux.o → 写 Module.symvers → 再链 vmlinux）。
-          # 我们只要 Module.symvers 里的 CRCs，不需要 vmlinux 本体，所以
-          # 最后链接阶段失败（binutils 2.38 对 msm gsi 的 dangerous relocation）可以容忍。
+          # （link-vmlinux.sh: LD -r vmlinux.o → MODPOST vmlinux.o → 写 Module.symvers → 再链 vmlinux）。
+          # 我们只要 Module.symvers 里的 CRCs，不需要 vmlinux 本体，
+          # 所以最终链接失败（binutils 2.38 的收尾阶段问题）可以容忍。
+          # 注意 GitHub 默认 shell 自带 -e -o pipefail，必须显式 set +e，否则 make 一非零就整步中断。
           make O="$OUT" ARCH=arm64 CC="$CC_NAME" CROSS_COMPILE=aarch64-linux-gnu- \
             HOSTCFLAGS="-fcommon" LOCALVERSION="-gf8cf95f4dc15" \
-            -j"$(nproc)" vmlinux 2>&1 | tail -80
-          rc=${PIPESTATUS[0]}
+            -j"$(nproc)" vmlinux > build.log 2>&1
+          rc=$?
+          tail -40 build.log
           echo "make 退出码: $rc"
           if [ ! -f "$OUT/Module.symvers" ]; then
-            echo "::error::Module.symvers 没生成，说明在 modpost 之前就失败了"
+            echo "::error::Module.symvers 没生成（在 modpost 之前就失败了），看上面 build.log 尾部"
             exit 1
           fi
           echo "Module.symvers: $(wc -l < "$OUT/Module.symvers") 行"
