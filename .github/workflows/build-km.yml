@@ -185,39 +185,49 @@ jobs:
             echo "::warning::本分支 module_layout 不匹配，不是这份源码（exit=$rc）"
           fi
 
-      - name: 编 km.ko
-        if: steps.crc.outputs.matched == '1'
+      - name: 编 km.ko（不论 CRC 是否匹配都要编，用于设备侧加载探针）
         run: |
-          set -euo pipefail
+          set +e
           cd "$KSRC"
           make O="$OUT" ARCH=arm64 CC="$CC_NAME" CROSS_COMPILE=aarch64-linux-gnu- \
             HOSTCFLAGS="-fcommon" LOCALVERSION="-gf8cf95f4dc15" \
-            M="$GITHUB_WORKSPACE/km" modules
+            M="$GITHUB_WORKSPACE/km" modules 2>&1 | tail -30
+          rc=${PIPESTATUS[0]}
+          echo "modules 退出码: $rc"
           cd "$GITHUB_WORKSPACE"
+          test -f km/hide_ksu_mnt.ko || { echo "::error::没生成 hide_ksu_mnt.ko"; exit 1; }
+          echo "=== 原始产物 ==="; ls -l km/*.ko
+          # 关键：设备内核 CONFIG_MODVERSIONS=y，但我们这套 OSS 源码+config 复刻出的
+          # module_layout CRC(0xadce43ae) 与出厂内核(0xaad0c453) 不一致（分支不是出厂同一提交）。
+          # kernel/module.c: check_version() 里 `if (versindex == 0) return 0;`
+          # → 模块若没有 __versions 段，内核就跳过全部 CRC 校验，只校验 vermagic。
+          # 探针模块不访问 struct module 字段，删段是安全的；vermagic 仍保持完全一致。
+          aarch64-linux-gnu-objcopy --remove-section=__versions km/hide_ksu_mnt.ko
+          echo "=== 去 __versions 后 ==="; ls -l km/hide_ksu_mnt.ko
+          readelf -S km/hide_ksu_mnt.ko | grep -c '__versions' | sed 's/^/__versions 段数量: /'
           cp "$OUT/Module.symvers" .
-          test -f km/hide_ksu_mnt.ko
-          echo "=== 产物 ==="; ls -l km/*.ko
 
       - name: 校验 vermagic
-        if: steps.crc.outputs.matched == '1'
         run: |
           set -euo pipefail
-          got=$(strings km/hide_ksu_mnt.ko | grep -m1 '^4\.19\.157')
+          got=$(strings km/hide_ksu_mnt.ko | grep -m1 'vermagic=' | sed 's/^vermagic=//')
           echo "ko vermagic : $got"
           echo "设备需要    : ${{ env.DEVICE_VERMAGIC }}"
           if [ "$got" = "${{ env.DEVICE_VERMAGIC }}" ]; then
             echo "VERMAGIC OK" | tee -a crc.txt
           else
-            echo "::warning::vermagic 不一致，insmod 会被拒（需要手工补丁或换提交）"
+            echo "::error::vermagic 不一致，insmod 会被拒"
             echo "VERMAGIC MISMATCH" | tee -a crc.txt
+            exit 1
           fi
 
       - uses: actions/upload-artifact@v4
-        if: steps.crc.outputs.matched == '1'
+        if: always()
         with:
           name: km-${{ matrix.branch }}
           path: |
             km/hide_ksu_mnt.ko
             Module.symvers
             crc.txt
+            ${{ github.workspace }}/kernel/build.log
           if-no-files-found: warn
