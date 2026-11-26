@@ -204,14 +204,16 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           test -f km/hide_ksu_mnt.ko || { echo "::error::没生成 hide_ksu_mnt.ko"; exit 1; }
           echo "=== 原始产物 ==="; ls -l km/*.ko
-          # 关键：设备内核 CONFIG_MODVERSIONS=y，但我们这套 OSS 源码+config 复刻出的
-          # module_layout CRC(0xadce43ae) 与出厂内核(0xaad0c453) 不一致（分支不是出厂同一提交）。
-          # kernel/module.c: check_version() 里 `if (versindex == 0) return 0;`
-          # → 模块若没有 __versions 段，内核就跳过全部 CRC 校验，只校验 vermagic。
-          # 探针模块不访问 struct module 字段，删段是安全的；vermagic 仍保持完全一致。
-          aarch64-linux-gnu-objcopy --remove-section=__versions km/hide_ksu_mnt.ko
-          echo "=== 去 __versions 后 ==="; ls -l km/hide_ksu_mnt.ko
-          readelf -S km/hide_ksu_mnt.ko | grep -c '__versions' | sed 's/^/__versions 段数量: /'
+          # 设备内核 CONFIG_MODVERSIONS=y 且 CONFIG_MODULE_FORCE_LOAD 未开：
+          #   - 没有 __versions 段 → check_version() 走 try_to_force_load() → 静默 ENOEXEC
+          #   - __versions 里的 CRC 与运行内核不一致 → "disagrees about version of symbol ..."
+          # 这台平板的运行内核和 /vendor/lib/modules/*.ko 的 CRC 都不一样
+          # （厂商 ko module_layout=0xaad0c453，运行内核=0x670752f0，实测厂商 ko 全部加载失败），
+          # 真值已经用 scripts/find_crcs.py 从 boot_a 的 __kcrctab 里读出来，放在 km/device_crcs.tsv。
+          # 所以这里保留 __versions 段，只把 CRC 改写成设备真值。
+          python3 scripts/patch_versions.py km/hide_ksu_mnt.ko km/device_crcs.tsv
+          echo "=== 改写后 ==="; ls -l km/hide_ksu_mnt.ko
+          readelf -x __versions km/hide_ksu_mnt.ko | head -5 || true
           cp "$OUT/Module.symvers" .
 
       - name: 校验 vermagic

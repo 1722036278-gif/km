@@ -1,0 +1,11 @@
+# 设备内核（boot_a 里那份 Image + /proc/kallsyms 地址）解析出的真实 modversions CRC
+# 提取方法见 scripts/find_crcs.py + scripts/read_kernel_crc.py
+# 说明：这台的 kernel 与 /vendor/lib/modules/*.ko 自带 CRC 不一致
+#       （厂商 ko 里 module_layout = 0xaad0c453，运行内核是 0x670752f0），
+#       所以厂商 ko 全都会报 "disagrees about version of symbol module_layout"。
+symbol	crc	table	index
+module_layout	0x670752f0	nongpl	3074
+printk	0x17b41e09	nongpl	3654
+init_uts_ns	0x24428be5	nongpl	7128
+vfs_statx	0x12ec5cec	nongpl	5254
+panic	0x8a0c53ce	nongpl	3422
