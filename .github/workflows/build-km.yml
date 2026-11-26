@@ -127,6 +127,13 @@ jobs:
           sed -i 's|\*result = (int)(t \* sc8551_adc_lsb\[channel\]);|*result = (int)t; /* CI: FP 占位，不参与 CRC */|' \
             drivers/power/supply/ti/bq2597x_charger.c
           grep -n 'CI: FP 占位' drivers/power/supply/ti/bq2597x_charger.c || true
+          # elish-r-oss 分支是 4.19.113，设备出厂内核是 4.19.157。
+          # 我们最终会删掉 __versions 段（内核就不做 CRC 校验了），只剩 vermagic 字符串要比对，
+          # 所以直接把 SUBLEVEL 拉到 157，让 vermagic 精确等于
+          #   4.19.157-perf-gf8cf95f4dc15 SMP preempt mod_unload modversions aarch64
+          grep -nE '^SUBLEVEL' Makefile | head -2
+          sed -i -E 's/^SUBLEVEL[[:space:]]*=.*/SUBLEVEL = 157/' Makefile
+          grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL)' Makefile | head -3
           grep -nE '^(extern )?(bool|void) (is_top_app|is_critical_task|is_inherit_top_app)' include/linux/sched.h kernel/sched/core.c
 
       - name: 套用设备 .config
