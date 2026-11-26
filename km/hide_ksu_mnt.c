@@ -1,29 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * hide_ksu_mnt - 在内核里抹掉 KSU/SUSFS 在 app mount namespace 留下的痕迹
+ * hide_ksu_mnt —— 探针版 v2（只验证加载链路与符号可解析性，不做任何 hook）
  *
- * 设计要点（基于 elish / 4.19.157 实测）：
- *   - 4.19 没有 kprobe（CONFIG_KPROBES 未开），只能 inline hook。
- *   - kptr_restrict=2，用户态拿不到地址，必须模块内部 kallsyms_lookup_name 解析。
- *   - 每个 app 进程 exec 时 KSU 都会重新挂一次 "KSU /debug_ramdisk"，用户态
- *     nsenter+umount 只能事后补救（每 10s 一次 373ms CPU），内核里拦才干净。
+ * 目标设备：Xiaomi elish (平板 5 Pro), 4.19.157-perf-gf8cf95f4dc15
+ * 加载后 dmesg 里应看到一行 "[hide_ksu_mnt] symbols:" 以及各符号地址；
+ * 若某个符号打印 0，说明该内核没有导出它（要换方案）。
  *
- * v1（本文件）= 探针版：只解析并打印符号地址，验证「编出来的 ko 能否 insmod」。
- * 校验点：Module.symvers 里 module_layout 必须等于 0xaad0c453，
- *         否则 vermagic/CRC 不匹配，insmod 直接 ENOEXEC。
+ * 作者：YG
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/utsname.h>
 #include <linux/kallsyms.h>
-#include <linux/slab.h>
-#include <linux/uaccess.h>
 
 #define HKM_TAG "hide_ksu_mnt"
 
-/* 需要解析的内核符号（v1 只解析，v2 拿去做 inline hook） */
-static const char * const hkm_targets[] = {
+/* 内核 4.19 里 kallsyms_lookup_name 仍是导出符号（GPL） */
+typedef unsigned long (*kln_t)(const char *name);
+
+static kln_t kln;
+
+static const char * const targets[] = {
 	"kallsyms_lookup_name",
 	"do_new_mount",
 	"vfs_kern_mount",
@@ -31,32 +30,32 @@ static const char * const hkm_targets[] = {
 	"set_memory_rw",
 	"set_memory_ro",
 	"kern_path",
+	"path_umount",
+	"iterate_mounts",
+	"kern_mount",
 };
-
-#define HKM_NR_TARGETS ARRAY_SIZE(hkm_targets)
-
-static unsigned long hkm_addr[HKM_NR_TARGETS];
 
 static int __init hkm_init(void)
 {
-	unsigned int i, ok = 0;
+	unsigned long a;
+	int i;
 
-	pr_info("%s: loading (vermagic=%s)\n", HKM_TAG, VERMAGIC_STRING);
+	pr_info("%s: loading, release=%s\n", HKM_TAG, init_uts_ns.name.release);
 
-	for (i = 0; i < HKM_NR_TARGETS; i++) {
-		hkm_addr[i] = kallsyms_lookup_name(hkm_targets[i]);
-		if (hkm_addr[i]) {
-			ok++;
-			pr_info("%s: %-22s = 0x%lx\n", HKM_TAG,
-				hkm_targets[i], hkm_addr[i]);
-		} else {
-			pr_warn("%s: %-22s not found\n", HKM_TAG,
-				hkm_targets[i]);
-		}
+	kln = (kln_t)kallsyms_lookup_name("kallsyms_lookup_name");
+	if (!kln) {
+		pr_err("%s: kallsyms_lookup_name 解析失败\n", HKM_TAG);
+		return -ENOENT;
 	}
 
-	pr_info("%s: ready, %u/%u symbols resolved\n",
-		HKM_TAG, ok, (unsigned int)HKM_NR_TARGETS);
+	pr_info("%s: symbols:\n", HKM_TAG);
+	for (i = 0; i < ARRAY_SIZE(targets); i++) {
+		a = kln(targets[i]);
+		pr_info("%s:   %-24s = 0x%lx%s\n", HKM_TAG, targets[i], a,
+			a ? "" : "   <-- 未解析");
+	}
+
+	pr_info("%s: probe ok (无 hook，仅供验证)\n", HKM_TAG);
 	return 0;
 }
 
@@ -70,5 +69,4 @@ module_exit(hkm_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("YG");
-MODULE_DESCRIPTION("hide KSU/SUSFS traces in app mount namespaces");
-MODULE_VERSION("0.1.0");
+MODULE_DESCRIPTION("elish mount/symbol probe (verification only)");
