@@ -23,15 +23,17 @@
 
 #define HKM_TAG "hide_ksu_mnt"
 
-/* 这些符号已确认出现在设备内核的 __ksymtab 里（CRC 见 km/device_crcs.tsv） */
-extern int vfs_statx(int dfd, const char __user *filename, int flags,
-		     struct kstat *stat, int lookup_flags);
+/* 只引用 100% 已导出、且头文件里就有声明的符号：
+ *   printk      —— nongpl #3654, CRC 0x17b41e09
+ *   init_uts_ns —— nongpl #7128, CRC 0x24428be5
+ * vfs_statx 虽然导出（#5254），但这套 4.19 源码里它的原型和 4.19.157 出厂内核不一致，
+ * 在模块里 extern 声明会 conflicting types，先不引用它。
+ */
 
 static int __init hkm_init(void)
 {
 	pr_info("%s: loaded, kernel release = %s\n", HKM_TAG, init_uts_ns.name.release);
 	pr_info("%s: printk      @ %pS\n", HKM_TAG, (void *)printk);
-	pr_info("%s: vfs_statx   @ %pS\n", HKM_TAG, (void *)vfs_statx);
 	pr_info("%s: init_uts_ns @ %px\n", HKM_TAG, (void *)&init_uts_ns);
 	pr_info("%s: probe ok (no hook)\n", HKM_TAG);
 	return 0;
