@@ -207,13 +207,19 @@ jobs:
           # 设备内核 CONFIG_MODVERSIONS=y 且 CONFIG_MODULE_FORCE_LOAD 未开：
           #   - 没有 __versions 段 → check_version() 走 try_to_force_load() → 静默 ENOEXEC
           #   - __versions 里的 CRC 与运行内核不一致 → "disagrees about version of symbol ..."
-          # 这台平板的运行内核和 /vendor/lib/modules/*.ko 的 CRC 都不一样
-          # （厂商 ko module_layout=0xaad0c453，运行内核=0x670752f0，实测厂商 ko 全部加载失败），
-          # 真值已经用 scripts/find_crcs.py 从 boot_a 的 __kcrctab 里读出来，放在 km/device_crcs.tsv。
-          # 所以这里保留 __versions 段，只把 CRC 改写成设备真值。
-          python3 scripts/patch_versions.py km/hide_ksu_mnt.ko km/device_crcs.tsv
-          echo "=== 改写后 ==="; ls -l km/hide_ksu_mnt.ko
-          readelf -x __versions km/hide_ksu_mnt.ko | head -5 || true
+          # 这台平板的运行内核是第三方自编（KASLR + SUSFS 内建），厂商 ko 全部加载失败，
+          # 从 boot_a 的 __kcrctab 抠出来的值写回去也仍报 disagrees → 不追 CRC 了。
+          # 有效做法：保留 __versions 段、把条目全部清零（名字变空串），命中 check_version()
+          # 的兜底分支：pr_warn_once("no symbol version for X") 之后 return 1 直接放行。
+          # 设备实测：insmod rc=0，dmesg 只有一行 "no symbol version for module_layout"。
+          python3 scripts/neutralize_versions.py km/hide_ksu_mnt.ko
+          echo "=== 处理后 ==="; ls -l km/hide_ksu_mnt.ko
+          readelf -S km/hide_ksu_mnt.ko | grep -q '__versions' || {
+            echo "::error::__versions 段没了，会走 try_to_force_load → ENOEXEC"; exit 1; }
+          if readelf -x __versions km/hide_ksu_mnt.ko | grep -q module_layout; then
+            echo "::error::__versions 里仍留有 module_layout 条目，会被 CRC 校验拦下"; exit 1
+          fi
+          echo "VERSIONS NEUTRALIZED" | tee -a crc.txt
           cp "$OUT/Module.symvers" .
 
       - name: 校验 vermagic
